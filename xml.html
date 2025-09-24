@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>XML → JSON 변환기 (sum_data 복구)</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .container {
+      display: flex; gap: 1rem;
+    }
+    textarea, pre {
+      width: 100%; height: 400px;
+      font-family: monospace; font-size: 0.9rem;
+      padding: 0.5rem; box-sizing: border-box;
+    }
+    pre { background: #f5f5f5; overflow: auto; }
+    button {
+      padding: 0.5rem 1rem; font-size: 1rem;
+      cursor: pointer; margin-right: 0.5rem;
+    }
+    #buttons { display: flex; gap: 0.5rem; }
+    label { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>XML → JSON 변환기 (numericFieldsByFormCd + sum_data)</h1>
+
+  <div class="container">
+    <div style="flex:1">
+      <label for="xml-input">XML 입력</label>
+      <textarea id="xml-input" placeholder="여기에 XML을 붙여넣으세요…"></textarea>
+    </div>
+    <div style="flex:1">
+      <label for="json-output">JSON 출력</label>
+      <pre id="json-output"></pre>
+    </div>
+  </div>
+
+  <div id="buttons">
+    <button id="convert-btn">변환</button>
+    <button id="copy-btn">JSON 복사</button>
+  </div>
+
+  <script>
+    // snake_case → camelCase
+    function toCamel(s) {
+      return s.replace(/_([a-zA-Z])/g, (_, c) => c.toUpperCase());
+    }
+
+    // 숫자로 변환할 필드 리스트: formCd 별로 정의
+    const numericFieldsByFormCd = {
+      O101M: ['sum','hiNtf','ltrmNtf','hiPmt','ltrmPmt'],
+      // …필요한 만큼 추가…
+    };
+
+    // XML → JSON
+    function xmlToJson(xmlStr) {
+      const parser = new DOMParser();
+      const docDom = parser.parseFromString(xmlStr, "application/xml");
+      const err    = docDom.querySelector("parsererror");
+      if (err) throw new Error("XML 파싱 오류: " + err.textContent);
+
+      const root   = docDom.documentElement;  // <yesone>
+      const result = { doc: {}, forms: [] };
+
+      // 1) <doc> → 문자열로 모두 넣기 (원본 요소명 유지)
+      const docNode = root.querySelector("doc");
+      if (docNode) {
+        Array.from(docNode.children).forEach(ch => {
+          result.doc[ch.tagName] = ch.textContent.trim();
+        });
+      }
+
+      // 2) 각 <form>
+      root.querySelectorAll("form").forEach(formNode => {
+        const formCd    = formNode.getAttribute("form_cd");
+        const numFields = numericFieldsByFormCd[formCd] || [];
+
+        const formObj = { formCd, mans: [] };
+
+        formNode.querySelectorAll("man").forEach(manNode => {
+          const manObj = {
+            resid:   manNode.getAttribute("resid"),
+            name:    manNode.getAttribute("name"),
+            sumData: undefined,
+            data:    []
+          };
+
+          // ← 여기서 sum_data 다시 처리
+          const sumDataNode = manNode.querySelector("sum_data");
+          if (sumDataNode) {
+            const sd = {};
+            Array.from(sumDataNode.children).forEach(ch => {
+              sd[toCamel(ch.tagName)] = ch.textContent.trim();
+            });
+            manObj.sumData = sd;
+          }
+
+          // <data> 순회
+          manNode.querySelectorAll("data").forEach(dataNode => {
+            const dataObj = {};
+
+            // data 속성 모두 문자열
+            Array.from(dataNode.attributes).forEach(({name,value}) => {
+              dataObj[toCamel(name)] = value;
+            });
+
+            // data 자식(sum, amt, 기타) 처리
+            Array.from(dataNode.children).forEach(child => {
+              const tag  = child.tagName;      
+              const key  = toCamel(tag);       
+              const text = child.textContent.trim();
+
+              if (tag === 'sum') {
+                dataObj[key] = text === "" ? null : Number(text);
+                Array.from(child.attributes).forEach(({name,value}) => {
+                  const k = toCamel(name);
+                  dataObj[k] = numFields.includes(k) ? Number(value) : value;
+                });
+              }
+              else if (tag === 'amt') {
+                if (!dataObj.amts) dataObj.amts = [];
+                const amtObj = {};
+                Array.from(child.attributes).forEach(({name,value}) => {
+                  const k = toCamel(name);
+                  amtObj[k] = numFields.includes(k) ? Number(value) : value;
+                });
+                const v = text === "" ? null : Number(text);
+                if (v !== null) amtObj.value = v;
+                dataObj.amts.push(amtObj);
+              }
+              else {
+                dataObj[key] = text;
+              }
+            });
+
+            manObj.data.push(dataObj);
+          });
+
+          formObj.mans.push(manObj);
+        });
+
+        result.forms.push(formObj);
+      });
+
+      return result;
+    }
+
+    // 변환 버튼
+    document.getElementById("convert-btn").addEventListener("click", () => {
+      const xml = document.getElementById("xml-input").value;
+      const out = document.getElementById("json-output");
+      out.textContent = '';
+      try {
+        const json = xmlToJson(xml);
+        out.textContent = JSON.stringify(json, null, 2);
+      } catch (e) {
+        out.textContent = e.message;
+      }
+    });
+
+    // JSON 복사 버튼
+    document.getElementById("copy-btn").addEventListener("click", () => {
+      const out = document.getElementById("json-output");
+      if (!out.textContent) {
+        alert('먼저 JSON을 변환해주세요.');
+        return;
+      }
+      navigator.clipboard.writeText(out.textContent)
+        .then(() => alert('JSON이 클립보드로 복사되었습니다.'))
+        .catch(err => alert('복사 실패: ' + err));
+    });
+  </script>
+</body>
+</html>

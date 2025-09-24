@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>연말정산 간소화 PDF 데이터 추출</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; }
+    #controls { margin-bottom: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+    #upload-area { padding: 1rem; border: 2px dashed #007BFF; border-radius: 4px; background: #f0f8ff; }
+    #upload-area label { font-weight: bold; margin-right: 1rem; cursor: pointer; }
+    #upload-area input[type="file"] { font-size: 1rem; }
+    #info-area { display: flex; align-items: center; gap: 1rem; }
+    #output { white-space: pre-wrap; background: #f5f5f5; padding: 1rem; border-radius: 4px; min-height: 200px; }
+    #copy-button {
+      padding: 0.5rem 0.75rem;
+      font-size: 1rem;
+      height: 2.5rem;
+      line-height: 1.5;
+      border: 1px solid #007BFF;
+      border-radius: 4px;
+      background-color: #007BFF;
+      color: #fff;
+      cursor: pointer;
+    }
+    #copy-button:hover {
+      background-color: #0056b3;
+      border-color: #0056b3;
+    }
+    #filename-display { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>연말정산 간소화 PDF 데이터 추출</h1>
+
+  <div id="controls">
+    <div id="upload-area">
+      <label for="file-input">PDF 파일 업로드:</label>
+      <input type="file" id="file-input" accept="application/pdf" />
+    </div>
+    <div id="info-area">
+      <label for="type-select">스트림 타입:</label>
+      <select id="type-select">
+        <option value="XML" selected>XML</option>
+        <option value="SAM">SAM</option>
+      </select>
+      <button id="copy-button">복사</button>
+      <div>현재 파일: <span id="filename-display">없음</span></div>
+    </div>
+  </div>
+
+  <div id="output"></div>
+
+  <!-- pdf-lib & pako CDN -->
+  <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+
+  <script>
+    const output         = document.getElementById("output");
+    const input          = document.getElementById("file-input");
+    const select         = document.getElementById("type-select");
+    const copyButton     = document.getElementById("copy-button");
+    const filenameDisplay = document.getElementById("filename-display");
+
+    let currentContext   = null;
+    let currentRawArray  = null;
+
+    function log(...args) {
+      output.textContent += args.join(" ") + "\n";
+    }
+
+    async function loadPdf(pdfFile) {
+      const arrayBuffer = await pdfFile.arrayBuffer();
+      const tempDoc     = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+      if (tempDoc.isEncrypted) {
+        const pwd = prompt("이 PDF의 비밀번호를 입력하세요:");
+        if (pwd === null) throw new Error("사용자가 취소했습니다.");
+        return await PDFLib.PDFDocument.load(arrayBuffer, { password: pwd });
+      }
+      return tempDoc;
+    }
+
+    function contentsToString(stream) {
+      const raw   = stream.getContents(true);
+      const bytes = pako.inflate(raw);
+      return new TextDecoder("utf-8").decode(bytes);
+    }
+
+    function processStreams() {
+      output.textContent = "";
+      if (!currentRawArray) {
+        log("먼저 PDF를 업로드하세요.");
+        return;
+      }
+
+      const desiredType = select.value;
+      for (let i = 0; i < currentRawArray.size(); i++) {
+        let el = currentRawArray.get(i);
+        if (el instanceof PDFLib.PDFRef) {
+          el = currentContext.lookup(el);
+        }
+        if (el instanceof PDFLib.PDFStream) {
+          const nameEntry = el.dict.get(PDFLib.PDFName.of("Name"));
+          const nameValue = nameEntry ? nameEntry.decodeText() : null;
+          if (nameValue === desiredType) {
+            // log(`── [${i}] ${desiredType} 스트림 내용 ──`);
+            log(contentsToString(el));
+          }
+        }
+      }
+    }
+
+    input.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      filenameDisplay.textContent = file.name;
+      output.textContent = "";
+      try {
+        const pdfDoc        = await loadPdf(file);
+        currentContext      = pdfDoc.context;
+        currentRawArray     = pdfDoc.catalog.get(PDFLib.PDFName.of("CustomFiles"));
+      } catch (err) {
+        alert(err.message);
+        return;
+      }
+      processStreams();
+      e.target.value = "";
+    });
+
+    select.addEventListener("change", processStreams);
+
+    copyButton.addEventListener("click", async () => {
+      const text = output.textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        alert("출력 내용이 클립보드에 복사되었습니다.");
+      } catch (err) {
+        alert("클립보드 복사에 실패했습니다: " + err);
+      }
+    });
+  </script>
+</body>
+</html>
